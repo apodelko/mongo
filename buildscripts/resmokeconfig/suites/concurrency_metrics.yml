@@ -25,13 +25,13 @@ selector:
 executor:
   archive:
     hooks:
-    - # run the aggregations stage in the background
+    - AggregateResourceConsumptionMetricsInBackground
     tests: true
   config:
     shell_options:
       readMode: commands
   hooks:
-    - # run the aggregations stage in the background
+    - AggregateResourceConsumptionMetricsInBackground
   fixture:
     class: ReplicaSetFixture
     mongod_options:
