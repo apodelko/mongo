@@ -43,6 +43,7 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
         else:
             self.fixture_config = fixture
 
+        print("hooks:", hooks)
         self.hooks_config = utils.default_if_none(hooks, [])
         self.test_config = utils.default_if_none(config, {})
 
@@ -53,7 +54,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
 
         self._suite = suite
         self.num_tests = len(suite.tests) * suite.options.num_repeat_tests
-        self.test_queue_logger = logging.loggers.new_testqueue_logger(suite.test_kind)
+        self.test_queue_logger = logging.loggers.new_testqueue_logger(
+            suite.test_kind)
 
         # Must be done after getting buildlogger configuration.
         self._jobs = self._create_jobs(self.num_tests)
@@ -117,12 +119,14 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
                 # still running if an Evergreen task were to time out from a hang/deadlock being
                 # triggered.
                 teardown_flag = threading.Event() if num_repeat_suites == 1 else None
-                (report, interrupted) = self._run_tests(test_queue, setup_flag, teardown_flag)
+                (report, interrupted) = self._run_tests(
+                    test_queue, setup_flag, teardown_flag)
 
                 self._suite.record_test_end(report)
 
                 if setup_flag and setup_flag.is_set():
-                    self.logger.error("Setup of one of the job fixtures failed")
+                    self.logger.error(
+                        "Setup of one of the job fixtures failed")
                     return_code = 2
                     return
                 # Remove the setup flag once the first suite ran.
@@ -137,7 +141,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
 
                 sb = []  # String builder.
                 self._suite.summarize_latest(sb)
-                self.logger.info("Summary of latest execution: %s", "\n    ".join(sb))
+                self.logger.info(
+                    "Summary of latest execution: %s", "\n    ".join(sb))
 
                 if not report.wasSuccessful():
                     return_code = 1
@@ -201,7 +206,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
         wait_secs = 2.0
         self.logger.debug("Waiting for threads to complete")
 
-        timer = threading.Timer(wait_secs, self._log_timeout_warning, args=[wait_secs])
+        timer = threading.Timer(
+            wait_secs, self._log_timeout_warning, args=[wait_secs])
         timer.daemon = True
         timer.start()
         try:
@@ -243,7 +249,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
             fixture_config = self.fixture_config.copy()
             fixture_class = fixture_config.pop("class")
 
-        fixture_logger = logging.loggers.new_fixture_logger(fixture_class, job_num)
+        fixture_logger = logging.loggers.new_fixture_logger(
+            fixture_class, job_num)
 
         return fixtures.make_fixture(fixture_class, fixture_logger, job_num, **fixture_config)
 
@@ -257,7 +264,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
             hook_class = hook_config.pop("class")
 
             hook_logger = logging.loggers.new_hook_logger(hook_class, job_num)
-            hook = _hooks.make_hook(hook_class, hook_logger, fixture, **hook_config)
+            hook = _hooks.make_hook(
+                hook_class, hook_logger, fixture, **hook_config)
             hooks.append(hook)
 
         return hooks
@@ -269,7 +277,8 @@ class TestSuiteExecutor(object):  # pylint: disable=too-many-instance-attributes
         :param job_num: instance number of job being created.
         :return: Job instance.
         """
-        job_logger = logging.loggers.new_job_logger(self._suite.test_kind, job_num)
+        job_logger = logging.loggers.new_job_logger(
+            self._suite.test_kind, job_num)
 
         fixture = self._make_fixture(job_num)
         hooks = self._make_hooks(fixture, job_num)

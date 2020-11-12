@@ -31,13 +31,12 @@ executor:
     shell_options:
       readMode: commands
   hooks:
-    - AggregateResourceConsumptionMetricsInBackground
+    - class: AggregateResourceConsumptionMetricsInBackground
   fixture:
     class: ReplicaSetFixture
     mongod_options:
-      oplogSize: 1024
       set_parameters:
         enableTestCommands: 1
         measureOperationResourceConsumption: true
         aggregateOperationResourceConsumptionMetrics: true
-      num_nodes: 3
+    num_nodes: 2
