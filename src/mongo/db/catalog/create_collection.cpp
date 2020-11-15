@@ -54,8 +54,8 @@ namespace mongo {
 namespace {
 void _createSystemDotViewsIfNecessary(OperationContext* opCtx, const Database* db) {
     // Create 'system.views' in a separate WUOW if it does not exist.
-    if (!CollectionCatalog::get(opCtx).lookupCollectionByNamespace(opCtx,
-                                                                   db->getSystemViewsName())) {
+    if (!CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx,
+                                                                    db->getSystemViewsName())) {
         WriteUnitOfWork wuow(opCtx);
         invariant(db->createCollection(opCtx, db->getSystemViewsName()));
         wuow.commit();
@@ -92,7 +92,7 @@ Status _createView(OperationContext* opCtx,
             nss,
             Top::LockType::NotLocked,
             AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
-            CollectionCatalog::get(opCtx).getDatabaseProfileLevel(nss.db()));
+            CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(nss.db()));
 
         // If the view creation rolls back, ensure that the Top entry created for the view is
         // deleted.
@@ -154,12 +154,26 @@ Status _createTimeseries(OperationContext* opCtx,
                            << "$assembledData"));
 
     return writeConflictRetry(opCtx, "create", ns.ns(), [&]() -> Status {
-        AutoGetCollection autoColl(opCtx, ns, MODE_IX);
+        AutoGetCollection autoColl(opCtx, ns, MODE_IX, AutoGetCollectionViewMode::kViewsPermitted);
         Lock::CollectionLock bucketsCollLock(opCtx, bucketsNs, MODE_IX);
         Lock::CollectionLock systemDotViewsLock(
             opCtx,
             NamespaceString(ns.db(), NamespaceString::kSystemDotViewsCollectionName),
             MODE_X);
+
+        // This is a top-level handler for time-series creation name conflicts. New commands coming
+        // in, or commands that generated a WriteConflict must return a NamespaceExists error here
+        // on conflict.
+        if (CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, ns)) {
+            return Status(ErrorCodes::NamespaceExists,
+                          str::stream() << "Collection already exists. NS: " << ns);
+        }
+
+        auto db = autoColl.ensureDbExists();
+        if (ViewCatalog::get(db)->lookup(opCtx, ns.ns())) {
+            return {ErrorCodes::NamespaceExists,
+                    str::stream() << "A view already exists. NS: " << ns};
+        }
 
         if (opCtx->writesAreReplicated() &&
             !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
@@ -167,24 +181,22 @@ Status _createTimeseries(OperationContext* opCtx,
                     str::stream() << "Not primary while creating collection " << ns};
         }
 
-        auto db = autoColl.ensureDbExists();
         _createSystemDotViewsIfNecessary(opCtx, db);
 
+        auto catalog = CollectionCatalog::get(opCtx);
         WriteUnitOfWork wuow(opCtx);
 
-        AutoStatsTracker statsTracker(
-            opCtx,
-            ns,
-            Top::LockType::NotLocked,
-            AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
-            CollectionCatalog::get(opCtx).getDatabaseProfileLevel(ns.db()));
+        AutoStatsTracker statsTracker(opCtx,
+                                      ns,
+                                      Top::LockType::NotLocked,
+                                      AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
+                                      catalog->getDatabaseProfileLevel(ns.db()));
 
-        AutoStatsTracker bucketsStatsTracker(
-            opCtx,
-            bucketsNs,
-            Top::LockType::NotLocked,
-            AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
-            CollectionCatalog::get(opCtx).getDatabaseProfileLevel(ns.db()));
+        AutoStatsTracker bucketsStatsTracker(opCtx,
+                                             bucketsNs,
+                                             Top::LockType::NotLocked,
+                                             AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
+                                             catalog->getDatabaseProfileLevel(ns.db()));
 
         // If the buckets collection and time-series view creation roll back, ensure that their Top
         // entries are deleted.
@@ -224,7 +236,7 @@ Status _createCollection(OperationContext* opCtx,
         // This is a top-level handler for collection creation name conflicts. New commands coming
         // in, or commands that generated a WriteConflict must return a NamespaceExists error here
         // on conflict.
-        if (CollectionCatalog::get(opCtx).lookupCollectionByNamespace(opCtx, nss)) {
+        if (CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, nss)) {
             return Status(ErrorCodes::NamespaceExists,
                           str::stream() << "Collection already exists. NS: " << nss);
         }
@@ -246,7 +258,7 @@ Status _createCollection(OperationContext* opCtx,
             nss,
             Top::LockType::NotLocked,
             AutoStatsTracker::LogMode::kUpdateTopAndCurOp,
-            CollectionCatalog::get(opCtx).getDatabaseProfileLevel(nss.db()));
+            CollectionCatalog::get(opCtx)->getDatabaseProfileLevel(nss.db()));
 
         // If the collection creation rolls back, ensure that the Top entry created for the
         // collection is deleted.
@@ -390,8 +402,8 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                 "Invalid UUID in applyOps create command: " + uuid.toString(),
                 uuid.isRFC4122v4());
 
-        auto& catalog = CollectionCatalog::get(opCtx);
-        const auto currentName = catalog.lookupNSSByUUID(opCtx, uuid);
+        auto catalog = CollectionCatalog::get(opCtx);
+        const auto currentName = catalog->lookupNSSByUUID(opCtx, uuid);
         auto serviceContext = opCtx->getServiceContext();
         auto opObserver = serviceContext->getOpObserver();
         if (currentName && *currentName == newCollName)
@@ -415,9 +427,7 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
         // a random temporary name is correct: once all entries are replayed no temporary
         // names will remain.
         const bool stayTemp = true;
-        auto futureColl = db
-            ? CollectionCatalog::get(opCtx).lookupCollectionByNamespace(opCtx, newCollName)
-            : nullptr;
+        auto futureColl = db ? catalog->lookupCollectionByNamespace(opCtx, newCollName) : nullptr;
         bool needsRenaming = static_cast<bool>(futureColl);
         invariant(!needsRenaming || allowRenameOutOfTheWay);
 
@@ -462,7 +472,7 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
 
                     wuow.commit();
                     // Re-fetch collection after commit to get a valid pointer
-                    futureColl = CollectionCatalog::get(opCtx).lookupCollectionByUUID(opCtx, uuid);
+                    futureColl = CollectionCatalog::get(opCtx)->lookupCollectionByUUID(opCtx, uuid);
                     return Status::OK();
                 });
 
@@ -490,7 +500,7 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
 
         // If the collection with the requested UUID already exists, but with a different
         // name, just rename it to 'newCollName'.
-        if (catalog.lookupCollectionByUUID(opCtx, uuid)) {
+        if (catalog->lookupCollectionByUUID(opCtx, uuid)) {
             invariant(currentName);
             uassert(40655,
                     str::stream() << "Invalid name " << newCollName << " for UUID " << uuid,

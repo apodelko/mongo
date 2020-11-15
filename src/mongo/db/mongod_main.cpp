@@ -80,6 +80,7 @@
 #include "mongo/db/fcv_op_observer.h"
 #include "mongo/db/free_mon/free_mon_mongod.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
+#include "mongo/db/ftdc/util.h"
 #include "mongo/db/global_settings.h"
 #include "mongo/db/index/index_access_method_factory_impl.h"
 #include "mongo/db/index_builds_coordinator_mongod.h"
@@ -260,7 +261,7 @@ void logStartup(OperationContext* opCtx) {
     AutoGetOrCreateDb autoDb(opCtx, startupLogCollectionName.db(), mongo::MODE_X);
     Database* db = autoDb.getDb();
     CollectionPtr collection =
-        CollectionCatalog::get(opCtx).lookupCollectionByNamespace(opCtx, startupLogCollectionName);
+        CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(opCtx, startupLogCollectionName);
     WriteUnitOfWork wunit(opCtx);
     if (!collection) {
         BSONObj options = BSON("capped" << true << "size" << 10 * 1024 * 1024);
@@ -268,7 +269,7 @@ void logStartup(OperationContext* opCtx) {
         CollectionOptions collectionOptions = uassertStatusOK(
             CollectionOptions::parse(options, CollectionOptions::ParseKind::parseForCommand));
         uassertStatusOK(db->userCreateNS(opCtx, startupLogCollectionName, collectionOptions));
-        collection = CollectionCatalog::get(opCtx).lookupCollectionByNamespace(
+        collection = CollectionCatalog::get(opCtx)->lookupCollectionByNamespace(
             opCtx, startupLogCollectionName);
     }
     invariant(collection);
@@ -1215,11 +1216,13 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
         repl::ReplicationStateTransitionLockGuard rstl(
             opCtx, MODE_X, repl::ReplicationStateTransitionLockGuard::EnqueueOnly());
 
-        // Kill all operations. And, makes all newly created opCtx to be immediately interrupted.
-        // After this point, the opCtx will have been marked as killed and will not be usable other
-        // than to kill all transactions directly below.
+        // Kill all operations except FTDC to continue gathering metrics. This makes all newly
+        // created opCtx to be immediately interrupted. After this point, the opCtx will have been
+        // marked as killed and will not be usable other than to kill all transactions directly
+        // below.
         LOGV2_OPTIONS(4784912, {LogComponent::kDefault}, "Killing all operations for shutdown");
-        serviceContext->setKillAllOperations();
+        const std::set<std::string> excludedClients = {std::string(kFTDCThreadName)};
+        serviceContext->setKillAllOperations(excludedClients);
 
         if (MONGO_unlikely(pauseWhileKillingOperationsAtShutdown.shouldFail())) {
             LOGV2_OPTIONS(4701700,
@@ -1323,10 +1326,6 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
     LOGV2(4784925, "Shutting down free monitoring");
     stopFreeMonitoring();
 
-    // Shutdown Full-Time Data Capture
-    LOGV2_OPTIONS(4784926, {LogComponent::kFTDC}, "Shutting down full-time data capture");
-    stopMongoDFTDC();
-
     LOGV2(4784927, "Shutting down the HealthLog");
     HealthLog::get(serviceContext).shutdown();
 
@@ -1355,6 +1354,10 @@ void shutdownTask(const ShutdownTaskArgs& shutdownArgs) {
     // the memory and makes leak sanitizer happy.
     LOGV2_OPTIONS(4784931, {LogComponent::kDefault}, "Dropping the scope cache for shutdown");
     ScriptEngine::dropScopeCache();
+
+    // Shutdown Full-Time Data Capture
+    LOGV2_OPTIONS(4784926, {LogComponent::kFTDC}, "Shutting down full-time data capture");
+    stopMongoDFTDC();
 
     LOGV2(20565, "Now exiting");
 
